@@ -1,0 +1,103 @@
+CUDA_Image_Convolution
+
+
+-----
+Orig Author:  Alan Reiner
+Date:         01 September, 2010
+Email:        etotheipi@gmail.com
+
+
+-----
+This is my first stab 2D convolution using CUDA.  It's pretty good,
+it does a 4096x4096 array of floating point (grayscale) values with
+an arbitrary 15x15 PSF in about 125 ms (plus 85ms of memory copies).
+
+There is no interface to use it.  It must be used by modifying the
+main() code and recompiling for each use.  At some point in the future
+I will organize it into a library that can be linked by other projects.
+
+
+
+
+-----
+Supported Hardware:
+
+   This code was designed for NVIDIA devices of Compute Capability 2.0+
+   which is any NVIDIA GTX 4XX series card (Fermi).  The code *should*
+   compile and run on 1.X devices, but the code is not optimized for them
+   so there may be a huge performance hit.  Maybe not.  (see note below
+   about compiling for 1.X GPUs)
+
+   I believe NVIDIA 8800 GT is the earliest NVIDIA card that supports
+   CUDA, and it would be Compute Capability 1.0.
+
+   CUDA was created by NVIDIA, for NVIDIA.  It will not work ATI cards.
+   If you want to take up GPU-programming on ATI, the only two options
+   I know are OpenGL and OpenCL.  However, the maturity of those
+   programming interfaces are unclear (but at least such programs can 
+   be run on both NVIDIA and ATI)
+
+
+-----
+Installing and running:
+
+   This directory should contain everything you need to compile
+   the image convolution code, besides the CUDA 3.1 toolkit
+   which can be downloaded from the following website:
+
+      http://developer.nvidia.com/object/cuda_3_1_downloads.html
+
+   In addition to installing the toolkit, you might need to add 
+   libcutil*.a and libshrutil*.a to your LD path.  In linux,
+   it is sufficient to copy them to your /usr/local/cuda/lib[64] 
+   directory.
+
+   I personally work with space-separated files for images, because 
+   they are trivial to read and write from C++.  Additionally, I 
+   use MATLAB to read/write these files too, which makes it easy
+   create input for the CUDA code, and verify output.
+
+   There is no reason this code won't work on Windows, though I've
+   never tried it.
+
+   I strongly urge anyone trying to learn CUDA to download the 
+   CUDA SDK.  It contains endless examples of every CUDA feature
+   in existence.  Once you know what to do, you can get the
+   syntax from there, which more often than not is very ugly.
+
+
+-----
+To work with older NVIDIA cards (8800+ GT, 9XXX GT, GTX 2XX):
+
+   Open commom/common.mk and around line 150, uncomment the GENCODE_SM10
+   line, which enables dual-compilation for CUDA Compute Capability 1.X
+   devices.  The reason I commented this out is that 1.X devices don't
+   support printf(), which is my main method for debugging.  Therefore,
+   leaving this line in the Makefile prevents the code from compiling 
+   when I'm attempting to debug.
+
+
+-----
+Planned Updates
+
+   - My current project requires operation on images represented by
+     floating-point values, hence why all the methods are for floats.
+     HOWEVER, most image processing is done on 8-bit data, which
+     would use 1/4 the bandwidth, and integer math is a bit faster
+     than floating point operations
+
+   - Bilateral filter is only a few steps away, just have to verify
+     the operations and memory allocations
+
+   - I need to break out separate files and functions for unit 
+     testing, instead of just modifying main() for each function
+
+   - 
+
+
+-----
+My test image is salt4096.txt, which is a binary input image I've 
+been using to test the convolution routines (isolated dots make it
+obvious whether your PSF was applied correctly).  However, because of
+its size, I have not committed it.  I added salt512.txt just for this.
+
