@@ -55,15 +55,19 @@
 //                   -1 -1 -1
 //
 //
-//    IMAGE CHUNK2:   0  1  0      Dilate Result:  6
+//    IMAGE CHUNK2:  -1  1 -1      Dilate Result:  6
 //                    1  1 -1
-//                    0 -1 -1
+//                   -1 -1 -1
 //
 //
-//    IMAGE CHUNK2:  -1 -1  1      Dilate Result:  -6
+//    IMAGE CHUNK3:  -1 -1  1      Dilate Result:  -6
 //                   -1 -1  1
 //                    1  1  1
 //             
+//
+//    IMAGE CHUNK4:  -1 -1 -1      Dilate Result:  2
+//                    1  1 -1
+//                    1  1 -1
 //           
 //          
 //
@@ -71,6 +75,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 #ifndef _GPU_MORPHOLOGY_CU_
 #define _GPU_MORPHOLOGY_CU_
+
 
 using namespace std;
 
@@ -177,105 +182,6 @@ using namespace std;
    } 
 
 
-////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-//
-// ***Generic Morphologoical Operation Kernel Function***
-// 
-//    This is the basis for *ALL* other morpohological operations.  Every 
-//    morphological operation in this library can be traced back to this
-//    (the optimized 3x3 ops are hardcoded/unrolled versions of this function)
-//
-//    For all morph operations, we use {-1, 0, +1} ~ {OFF, DONTCARE, ON}.
-//    This mapping allows us to use direct integer multiplication and 
-//    summing of SE and image components.  Integer multiplication is 
-//    much faster than using lots of if-statements.
-//
-//    Erosion, dilation, median, and a variety of weird and unique 
-//    morphological operations are created solely by adjusting the 
-//    target sum argument (seTargSum).
-// 
-////////////////////////////////////////////////////////////////////////////////
-//
-// Target Sum Values:
-//
-// The following describes under what conditions the SE is considered to "hit"
-// a chunk of the image, based on how many indvidual pixels it "hits":
-//
-//
-//    Erosion:  Hit every non-zero pixel
-//
-//          If we hit every pixel, we get a +1 for every non-zero elt
-//          Therefore, our target should be [seNonZero]
-//
-//    Dilation:  Hit at least one non-zero pixel
-//
-//          If we miss every single pixel:  sum == -seNonZero
-//          If we hit one pixel:            sum == -seNonZero+2;
-//          If we hit two pixels:           sum == -seNonZero+4;
-//          ...
-//          Therefore, our target should be [-seNonZero+1] or greater
-//
-//
-//    Median:   More pixels hit than not hit
-//       
-//          Since each pixel-hit is a +1, and each pixel-miss is a -1,
-//          the median is 1 if and only if there are more +1s than -1s.
-//          Therefore, our target should be [0] or greater
-//
-//
-////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////
-__global__ void  Morph_Generic_Kernel( 
-               int*  devInPtr,    
-               int*  devOutPtr,    
-               int   imgCols,    
-               int   imgRows,    
-               int*  sePtr,    
-               int   seColRad,
-               int   seRowRad,
-               int   seTargSum)
-{  
-
-   CREATE_CONVOLUTION_VARIABLES_MORPH(seColRad, seRowRad); 
-
-   const int seStride = seRowRad*2+1;   
-   const int sePixels = seStride*(seColRad*2+1);   
-   int* shmSE = (int*)&shmOutput[ROUNDUP32(localPixels)];   
-
-   COPY_LIN_ARRAY_TO_SHMEM_MORPH(sePtr, shmSE, sePixels); 
-
-   PREPARE_PADDED_RECTANGLE_MORPH(seColRad, seRowRad); 
-
-   shmOutput[localIdx] = -1;
-
-   __syncthreads();   
-
-   int accumInt = 0;
-   for(int coff=-seColRad; coff<=seColRad; coff++)   
-   {   
-      for(int roff=-seRowRad; roff<=seRowRad; roff++)   
-      {   
-         int seCol = seColRad + coff;   
-         int seRow = seRowRad + roff;   
-         int seIdx = IDX_1D(seCol, seRow, seStride);   
-         int seVal = shmSE[seIdx];   
-
-         int shmPRCol = padRectCol + coff;   
-         int shmPRRow = padRectRow + roff;   
-         int shmPRIdx = IDX_1D(shmPRCol, shmPRRow, padRectStride);   
-         accumInt += seVal * shmPadRect[shmPRIdx];
-      }   
-   }   
-   // If every pixel was identical as expected, accumInt==seTargSum
-   if(accumInt >= seTargSum)
-      shmOutput[localIdx] = 1;
-
-   __syncthreads();   
-
-   devOutPtr[globalIdx] = (shmOutput[localIdx] + 1) / 2.0f;
-}
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -330,190 +236,19 @@ __global__ void  Morph3x3_##name##_Kernel(       \
 }
 
 
-////////////////////////////////////////////////////////////////////////////////
-// Standard 3x3 erosions and dilations and median filtering
-CREATE_3X3_MORPH_KERNEL( Dilate, -8,  
-                                             1,  1,  1,
-                                             1,  1,  1,
-                                             1,  1,  1);
-CREATE_3X3_MORPH_KERNEL( Erode, 9,
-                                             1,  1,  1,
-                                             1,  1,  1,
-                                             1,  1,  1);
-CREATE_3X3_MORPH_KERNEL( DilateCross, -4,  
-                                             0,  1,  0,
-                                             1,  1,  1,
-                                             0,  1,  0);
-
-CREATE_3X3_MORPH_KERNEL( ErodeCross, 5,
-                                             0,  1,  0,
-                                             1,  1,  1,
-                                             0,  1,  0);
-
-CREATE_3X3_MORPH_KERNEL( Median, 0,
-                                             1,  1,  1,
-                                             1,  1,  1,
-                                             1,  1,  1);
-
-CREATE_3X3_MORPH_KERNEL( MedianCross, 0,
-                                             0,  1,  0,
-                                             1,  1,  1,
-                                             0,  1,  0);
 
 ////////////////////////////////////////////////////////////////////////////////
-// There are 8 standard structuring elements for THINNING
-CREATE_3X3_MORPH_KERNEL( Thin1, 7,
-                                             1,  1,  1,
-                                             0,  1,  0,
-                                            -1, -1, -1);
-CREATE_3X3_MORPH_KERNEL( Thin2, 7,
-                                            -1,  0,  1,
-                                            -1,  1,  1,
-                                            -1,  0,  1);
-CREATE_3X3_MORPH_KERNEL( Thin3, 7,
-                                            -1, -1, -1,
-                                             0,  1,  0,
-                                             1,  1,  1);
-CREATE_3X3_MORPH_KERNEL( Thin4, 7,
-                                             1,  0, -1,
-                                             1,  1, -1,
-                                             1,  0, -1);
-
-CREATE_3X3_MORPH_KERNEL( Thin5, 6,
-                                             0, -1, -1,
-                                             1,  1, -1,
-                                             0,  1,  0);
-CREATE_3X3_MORPH_KERNEL( Thin6, 6,
-                                             0,  1,  0,
-                                             1,  1, -1,
-                                             0, -1, -1);
-CREATE_3X3_MORPH_KERNEL( Thin7, 6,
-                                             0,  1,  0,
-                                            -1,  1,  1,
-                                            -1, -1,  0);
-CREATE_3X3_MORPH_KERNEL( Thin8, 6,
-                                            -1, -1,  0,
-                                            -1,  1,  1,
-                                             0,  1,  0);
-        
+// This macro simply creates the declarations for the above functions, to be
+// used in the header file
 ////////////////////////////////////////////////////////////////////////////////
-// There are 8 standard structuring elements for PRUNING
-CREATE_3X3_MORPH_KERNEL( Prune1, 7,
-                                             0,  1,  0,
-                                            -1,  1, -1,
-                                            -1, -1, -1);
-CREATE_3X3_MORPH_KERNEL( Prune2, 7,
-                                            -1, -1,  0,
-                                            -1,  1,  1,
-                                            -1, -1,  0);
-CREATE_3X3_MORPH_KERNEL( Prune3, 7,
-                                            -1, -1, -1,
-                                            -1,  1, -1,
-                                             0,  1,  0);
-CREATE_3X3_MORPH_KERNEL( Prune4, 7,
-                                             0, -1, -1,
-                                             1,  1, -1,
-                                             0, -1, -1);
-
-CREATE_3X3_MORPH_KERNEL( Prune5, 9,
-                                            -1, -1, -1,
-                                            -1,  1, -1,
-                                             1, -1, -1);
-CREATE_3X3_MORPH_KERNEL( Prune6, 9,
-                                            -1, -1, -1,
-                                            -1,  1, -1,
-                                            -1, -1,  1);
-CREATE_3X3_MORPH_KERNEL( Prune7, 9,
-                                            -1, -1,  1,
-                                            -1,  1, -1,
-                                            -1, -1, -1);
-CREATE_3X3_MORPH_KERNEL( Prune8, 9,
-                                             1, -1, -1,
-                                            -1,  1, -1,
-                                            -1, -1, -1);
+#define DECLARE_3X3_MORPH_KERNEL( name ) \
+__global__ void  Morph3x3_##name##_Kernel(       \
+               int*   devInPtr,          \
+               int*   devOutPtr,          \
+               int    imgCols,          \
+               int    imgRows); 
 
 
-////////////////////////////////////////////////////////////////////////////////
-// Dilation and Erosion are just simple cases of Hit-or-Miss
-// We expect the structuring element to consist only of 1s and 0s, no -1s
-////////////////////////////////////////////////////////////////////////////////
-
-
-
-////////////////////////////////////////////////////////////////////////////////
-// BASIC UNARY & BINARY *MASK* OPERATORS
-// 
-// Could create LUTs, but I'm not sure the extra implementation complexity
-// actually provides much benefit.  These ops already run on the order of
-// microseconds.
-//
-// NOTE:  These operators are for images with {0,1}, only the MORPHOLOGICAL
-//        operators will operate with {-1,0,1}
-//
-////////////////////////////////////////////////////////////////////////////////
-
-////////////////////////////////////////////////////////////////////////////////
-__global__ void  MaskUnion_Kernel( int* A, int* B, int* devOut)
-{  
-   const int idx = blockDim.x*blockIdx.x + threadIdx.x;
-
-   if( A[idx] + B[idx] > 0)
-      devOut[idx] = 1;
-   else
-      devOut[idx] = 0;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-__global__ void  MaskIntersect_Kernel( int* A, int* B, int* devOut)
-{  
-   const int idx = blockDim.x*blockIdx.x + threadIdx.x;
-   devOut[idx] = A[idx] * B[idx];
-}
-
-////////////////////////////////////////////////////////////////////////////////
-__global__ void  MaskSubtract_Kernel( int* A, int* B, int* devOut)
-{  
-   const int idx = blockDim.x*blockIdx.x + threadIdx.x;
-   if( B[idx] == 0)
-      devOut[idx] = 0;
-   else 
-      devOut[idx] = A[idx];
-}
-
-////////////////////////////////////////////////////////////////////////////////
-__global__ void  MaskInvert_Kernel( int* A, int* devOut)
-{  
-   const int idx = blockDim.x*blockIdx.x + threadIdx.x;
-   devOut[idx] = 1 - A[idx];
-}
-
-////////////////////////////////////////////////////////////////////////////////
-// REMOVED:  this is what cudaMemcpy(..., cudaMemcpyDeviceToDevice) is for
-//__global__ void  MaskCopy_Kernel( int* A, int* devOut)
-//{  
-   //const int idx = blockDim.x*blockIdx.x + threadIdx.x;
-   //devOut[idx] = A[idx];
-//}
-
-////////////////////////////////////////////////////////////////////////////////
-// TODO: This is a very dumb/slow equal operator, actually won't even work
-//       Perhaps have the threads atomicAdd to a globalMem location if !=
-//__global__ void  MaskCountDiff_Kernel( int* A, int* B, int* globalMemCount)
-//{  
-   //const int idx = blockDim.x*blockIdx.x + threadIdx.x;
-   //if(A[idx] != B[idx])
-      //atomicAdd(numNotEqual, 1);
-//}
-
-
-////////////////////////////////////////////////////////////////////////////////
-// TODO: Need to use reduction for this, but that can be kind of complicated
-//__global__ void  MaskSum_Kernel( int* A, int* globalMemSum)
-//{  
-   //const int idx = blockDim.x*blockIdx.x + threadIdx.x;
-   //if(A[idx] != B[idx])
-      //atomicAdd(numNotEqual, 1);
-//}
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -546,6 +281,120 @@ __global__ void  MaskInvert_Kernel( int* A, int* devOut)
                         imageRows_);  \
    } 
 
+
+
+////////////////////////////////////////////////////////////////////////////////
+// Standard 3x3 erosions, dilations and median filtering
+DECLARE_3X3_MORPH_KERNEL( Dilate )
+DECLARE_3X3_MORPH_KERNEL( Erode )
+DECLARE_3X3_MORPH_KERNEL( DilateCross )
+DECLARE_3X3_MORPH_KERNEL( ErodeCross )
+DECLARE_3X3_MORPH_KERNEL( Median )
+DECLARE_3X3_MORPH_KERNEL( MedianCross )
+
+////////////////////////////////////////////////////////////////////////////////
+// There are 8 standard structuring elements for THINNING
+DECLARE_3X3_MORPH_KERNEL( Thin1 );
+DECLARE_3X3_MORPH_KERNEL( Thin2 );
+DECLARE_3X3_MORPH_KERNEL( Thin3 );
+DECLARE_3X3_MORPH_KERNEL( Thin4 );
+DECLARE_3X3_MORPH_KERNEL( Thin5 );
+DECLARE_3X3_MORPH_KERNEL( Thin6 );
+DECLARE_3X3_MORPH_KERNEL( Thin7 );
+DECLARE_3X3_MORPH_KERNEL( Thin8 );
+        
+////////////////////////////////////////////////////////////////////////////////
+// There are 8 standard structuring elements for PRUNING
+DECLARE_3X3_MORPH_KERNEL( Prune1 );
+DECLARE_3X3_MORPH_KERNEL( Prune2 );
+DECLARE_3X3_MORPH_KERNEL( Prune3 );
+DECLARE_3X3_MORPH_KERNEL( Prune4 );
+DECLARE_3X3_MORPH_KERNEL( Prune5 );
+DECLARE_3X3_MORPH_KERNEL( Prune6 );
+DECLARE_3X3_MORPH_KERNEL( Prune7 );
+DECLARE_3X3_MORPH_KERNEL( Prune8 );
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+// BASIC UNARY & BINARY *MASK* OPERATORS
+// 
+// Could create LUTs, but I'm not sure the extra implementation complexity
+// actually provides much benefit.  These ops already run on the order of
+// microseconds.
+//
+// NOTE:  These operators are for images with {0,1}, only the MORPHOLOGICAL
+//        operators will operate with {-1,0,1}
+//
+////////////////////////////////////////////////////////////////////////////////
+__global__ void  MaskUnion_Kernel( int* A, int* B, int* devOut);
+__global__ void  MaskIntersect_Kernel( int* A, int* B, int* devOut);
+__global__ void  MaskSubtract_Kernel( int* A, int* B, int* devOut);
+__global__ void  MaskInvert_Kernel( int* A, int* devOut);
+__global__ void  MaskCopy_Kernel( int* A, int* devOut);
+__global__ void  MaskCountDiff_Kernel( int* A, int* B, int* globalMemCount);
+__global__ void  MaskSum_Kernel( int* A, int* globalMemSum);
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+// ***Generic Morphologoical Operation Kernel Function***
+// 
+//    This is the basis for *ALL* other morpohological operations.  Every 
+//    morphological operation in this library can be traced back to this
+//    (the optimized 3x3 ops are hardcoded/unrolled versions of this function)
+//
+//    For all morph operations, we use {-1, 0, +1} ~ {OFF, DONTCARE, ON}.
+//    This mapping allows us to use direct integer multiplication and 
+//    summing of SE and image components.  Integer multiplication is 
+//    much faster than using lots of if-statements.
+//
+//    Erosion, dilation, median, and a variety of weird and unique 
+//    morphological operations are created solely by adjusting the 
+//    target sum argument (seTargSum).
+// 
+////////////////////////////////////////////////////////////////////////////////
+//
+// Target Sum Values:
+//
+// The following describes under what conditions the SE is considered to "hit"
+// a chunk of the image, based on how many indvidual pixels it "hits":
+//
+//
+//    Erosion:  Hit every non-zero pixel
+//
+//          If we hit every pixel, we get a +1 for every non-zero elt
+//          Therefore, our target should be [seNonZero]
+//
+//    Dilation:  Hit at least one non-zero pixel
+//
+//          If we miss every single pixel:  sum == -seNonZero
+//          If we hit one pixel:            sum == -seNonZero+2;
+//          If we hit two pixels:           sum == -seNonZero+4;
+//          ...
+//          Therefore, our target should be [-seNonZero+1] or greater
+//
+//
+//    Median:   More pixels hit than not hit
+//       
+//          Since each pixel-hit is a +1, and each pixel-miss is a -1,
+//          the median is 1 if and only if there are more +1s than -1s.
+//          Therefore, our target should be [0] or greater
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+__global__ void  Morph_Generic_Kernel( 
+               int*  devInPtr,    
+               int*  devOutPtr,    
+               int   imgCols,    
+               int   imgRows,    
+               int*  sePtr,    
+               int   seColRad,
+               int   seRowRad,
+               int   seTargSum);
 
 ////////////////////////////////////////////////////////////////////////////////
 // 
@@ -667,7 +516,7 @@ private:
    // so we can calculate the total memory usage of all workbenches, which 
    // would include all buffers and SEs
    static vector<MorphWorkbench*> masterMwbList_;
-   static vector<StructElt> masterSEList_;
+   static vector<StructElt>       masterSEList_;
 
    // This workbench should know where it is in the master MWB list
    int mwbID_;
@@ -707,7 +556,7 @@ public:
    void setBlockSize(dim3 newSize);
 
    // Calculate the device mem used by all MWBs and SEs
-   static long int calculateDeviceMemUsage(bool printToStdout=true);
+   static int calculateDeviceMemUsage(bool printToStdout=true);
    
    // Forking is the really just the same as copying
    // TODO:  not implemented yet
